@@ -1,0 +1,797 @@
+---
+title: "Para onde vão os recursos das emendas parlamentares?"
+subtitle: "Pernambuco em comparação com os demais estados do Nordeste (2014 a 2026)"
+author: "Lucas Pontes"
+date: "05/11/2026"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+# Configuração global: o código fica escondido e só aparecem textos, tabelas e gráficos
+knitr::opts_chunk$set(
+  echo = FALSE, message = FALSE, warning = FALSE,
+  fig.width = 9, fig.height = 5, fig.align = "center"
+)
+options(scipen = 999)  # evita notação científica nos números
+```
+
+# 1. Introdução
+
+## 1.1 O problema
+
+Todo ano o Congresso vota o orçamento do governo federal. Nessa votação, deputados e senadores podem propor emendas, que servem para mandar uma parte desse dinheiro para estados e municípios, por exemplo para a saúde ou para obras. Por isso as emendas são muito comentadas quando se fala em política e transparência.
+
+As emendas têm tipos diferentes: individual (de um parlamentar), de bancada (dos parlamentares de um estado), de comissão e de relator. Nas individuais existe ainda a transferência especial, também chamada de "emenda Pix", em que o dinheiro vai direto para o estado ou o município, sem convênio. Em dezembro de 2022 o STF julgou que o chamado "orçamento secreto", ligado às emendas de relator, não era compatível com a Constituição.
+
+Como estudo em Pernambuco, quis ver como o estado aparece nesse cenário. A pergunta do trabalho é: para onde vai o dinheiro das emendas parlamentares e como Pernambuco se compara aos outros estados do Nordeste?
+
+## 1.2 A abordagem
+
+Primeiro eu limpo e junto as três tabelas do Portal da Transparência. Depois faço gráficos para ver o quadro geral do Brasil, comparar Pernambuco com o Nordeste, ver quanto do dinheiro não diz para qual município foi, quem recebe, quanto do que foi prometido é pago e o que os convênios compram.
+
+## 1.3 A técnica
+
+Os dados foram lidos com a função read.csv() e tratados com o R básico e com os pacotes dplyr e tidyr, e as tabelas foram unidas com merge() pelo Código da Emenda. Os gráficos foram feitos com barplot() (R básico) e com o plotly, que deixa alguns deles interativos, e as tabelas com kable. Para os convênios, fiz também uma contagem simples das palavras mais usadas no texto do objeto (pacote tidytext).
+
+## 1.4 Quem se beneficia
+
+A análise pode ser útil para quem quer entender melhor como o dinheiro público é distribuído, como estudantes, jornalistas e pessoas que acompanham os gastos do governo, e também para quem trabalha em municípios e quer comparar o seu estado com os vizinhos.
+
+# 2. Pacotes requeridos
+
+Os pacotes usados e para que cada um serve:
+
+- dplyr: filtrar, selecionar, criar variáveis, agrupar e resumir os dados (filter, select, mutate, group_by, summarise e arrange), ligando os passos com o operador %>%.
+- tidyr: separar uma coluna em várias (separate) e transformar linhas em colunas (spread).
+- plotly: gráficos interativos.
+- kableExtra: tabelas formatadas.
+- tidytext: separar o texto dos convênios em palavras.
+
+A leitura dos arquivos (read.csv), a junção das tabelas (merge) e os gráficos estáticos (barplot) usam funções que já vêm no R.
+
+```{r pacotes}
+library(dplyr)       # manipulação: filter, select, mutate, group_by, summarise, arrange e o %>%
+library(tidyr)       # separate (separar colunas) e spread (linhas -> colunas)
+library(plotly)      # gráficos interativos
+library(kableExtra)  # tabelas formatadas (usa a função kable do knitr)
+library(tidytext)    # separar o texto dos convênios em palavras
+```
+
+```{r auxiliares, include=FALSE}
+# Funções para escrever valores dentro do texto e das tabelas
+bi    <- function(x) paste0("R$ ", format(round(x / 1e9, 1), decimal.mark = ",", nsmall = 1, trim = TRUE), " bi")
+pc    <- function(x) paste0(format(round(x * 100, 1), decimal.mark = ",", nsmall = 1, trim = TRUE), "%")
+reais <- function(x) paste("R$", format(round(x), big.mark = ".", decimal.mark = ",", trim = TRUE))
+
+# "BANCADA DE PERNAMBUCO" -> "Bancada de Pernambuco" (só formatação de texto)
+titulo <- function(x) {
+  x <- tools::toTitleCase(tolower(x))
+  for (p in c("De", "Da", "Do", "Dos", "Das")) {
+    x <- gsub(paste0(" ", p, " "), paste0(" ", tolower(p), " "), x)
+  }
+  x
+}
+
+# junta palavras em português: c("a", "b", "c") -> "a, b e c"
+juntar <- function(x) {
+  if (length(x) == 1) return(x)
+  paste(paste(x[-length(x)], collapse = ", "), "e", x[length(x)])
+}
+
+# nome do estado com artigo, para o texto ficar certo ("a Bahia", "o Ceará")
+com_artigo <- c(AL = "Alagoas", BA = "a Bahia", CE = "o Ceará", MA = "o Maranhão",
+                PB = "a Paraíba", PE = "Pernambuco", PI = "o Piauí",
+                RN = "o Rio Grande do Norte", SE = "Sergipe")
+nome_uf <- function(sigla) titulo(nordeste$uf[nordeste$uf_sigla == sigla])
+```
+
+# 3. Preparação dos dados
+
+## 3.1 Fonte dos dados
+
+Os dados vêm do [Portal da Transparência do Governo Federal](https://portaldatransparencia.gov.br/download-de-dados/emendas-parlamentares), mantido pela Controladoria-Geral da União (CGU). O portal foi criado para a população poder acompanhar como o dinheiro público é gasto, então o propósito original desses dados é a transparência. Os dados são registros do próprio governo federal, tirados do sistema que controla o orçamento (o SIAFI), e são atualizados conforme o dinheiro é empenhado e pago.
+
+Baixei os arquivos em outubro de 2026. São dados livres e cobrem os anos de 2014 a 2026 (2026 vai até outubro). Eles vêm em três tabelas em CSV, ligadas pelo Código da Emenda:
+
+- Emendas (28 variáveis): ano, tipo, autor, local, área do gasto e valores empenhado, liquidado e pago.
+- Por Favorecido (13 variáveis): quem recebeu o dinheiro e quanto.
+- Convênios (12 variáveis): convenente, objeto e valor dos convênios.
+
+Os valores ausentes não vêm como NA. Eles aparecem escritos como "Sem informação" ou "S/I", então precisei tratar isso antes de analisar.
+
+## 3.2 Importação
+
+```{r importacao}
+# Os três arquivos do Portal da Transparência têm o mesmo formato:
+#   - colunas separadas por ";"
+#   - vírgula como separador decimal ("858000,00")
+#   - codificação latin1 (sem isso os acentos quebram)
+#   - valores ausentes escritos como "Sem informação" ou "S/I"
+# Por isso criei uma função com esses argumentos, para não repetir três vezes.
+ler_csv <- function(arquivo) {
+  read.csv(file = arquivo,
+           sep = ";",                 # colunas separadas por ponto e vírgula
+           dec = ",",                 # vírgula decimal: os valores já viram número
+           header = TRUE,             # a primeira linha tem os nomes das variáveis
+           fileEncoding = "latin1",   # para os acentos aparecerem certos
+           strip.white = TRUE,        # tira espaços sobrando no começo/fim
+           na.strings = c("", "Sem informação", "S/I"),  # tudo isso vira NA
+           check.names = FALSE)       # mantém os nomes originais das colunas
+}
+
+emendas_raw     <- ler_csv("dados/EmendasParlamentares.csv")
+favorecidos_raw <- ler_csv("dados/EmendasParlamentares_PorFavorecido.csv")
+convenios_raw   <- ler_csv("dados/EmendasParlamentares_Convenios.csv")
+```
+```{r dimensoes}
+# Visão geral das três bases originais
+dimensoes <- data.frame(
+  Base    = c("Emendas", "Favorecidos", "Convênios"),
+  Linhas  = c(nrow(emendas_raw), nrow(favorecidos_raw), nrow(convenios_raw)),
+  Colunas = c(ncol(emendas_raw), ncol(favorecidos_raw), ncol(convenios_raw))
+)
+
+kbl(dimensoes, format.args = list(big.mark = ".", decimal.mark = ",")) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+```
+```{r ausentes}
+# "Sem informação" e "S/I" já viraram NA na importação (argumento na.strings).
+# Agora conto quantos NA existem em cada coluna da base de emendas.
+na_por_coluna <- colSums(is.na(emendas_raw))   # uma contagem para cada coluna
+
+ausentes <- data.frame(Variavel = names(na_por_coluna),
+                       Registros = na_por_coluna)
+ausentes <- ausentes[ausentes$Registros > 0, ]                         # só colunas com NA
+ausentes <- ausentes[order(ausentes$Registros, decreasing = TRUE), ]   # do maior para o menor
+
+kbl(ausentes, row.names = FALSE,
+    col.names = c("Variável", "Registros sem informação"),
+    format.args = list(big.mark = ".", decimal.mark = ",")) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "condensed"))
+```
+
+```{r calc-bruto, include=FALSE}
+n_aus     <- sum(is.na(emendas_raw))
+n_sem_cod <- sum(is.na(emendas_raw$`Código da Emenda`))
+```
+
+Juntas, as três bases têm `r format(nrow(emendas_raw) + nrow(favorecidos_raw) + nrow(convenios_raw), big.mark = ".", decimal.mark = ",")` linhas. Na base de emendas, "Sem informação" ou "S/I" aparecem `r format(n_aus, big.mark = ".", decimal.mark = ",")` vezes, e `r format(n_sem_cod, big.mark = ".", decimal.mark = ",")` linhas estão sem Código da Emenda, o que impede juntar essas linhas com as outras tabelas. Os valores vêm com vírgula decimal (858000,00), o que resolvi na importação com o argumento dec = ",", e as datas vêm como texto.
+
+## 3.3 Limpeza
+
+```{r tabela-nordeste}
+# Tabela de apoio: os 9 estados do Nordeste (nome completo e sigla).
+# É necessária porque a base de emendas usa o nome do estado e a de favorecidos usa a sigla.
+nordeste <- data.frame(
+  uf_sigla = c("AL", "BA", "CE", "MA", "PB", "PE", "PI", "RN", "SE"),
+  uf       = c("ALAGOAS", "BAHIA", "CEARÁ", "MARANHÃO", "PARAÍBA",
+               "PERNAMBUCO", "PIAUÍ", "RIO GRANDE DO NORTE", "SERGIPE")
+)
+```
+```{r limpeza-emendas}
+# 1) seleciono só as colunas de interesse (pelo nome original)...
+emendas <- emendas_raw[, c("Código da Emenda", "Ano da Emenda", "Tipo de Emenda",
+                           "Nome do Autor da Emenda", "Localidade de aplicação do recurso",
+                           "Município", "UF", "Nome Função",
+                           "Valor Empenhado", "Valor Liquidado", "Valor Pago",
+                           "Valor Restos A Pagar Pagos")]
+
+# 2) ... e troco por nomes curtos, sem acento e sem espaço
+names(emendas) <- c("codigo", "ano", "tipo", "autor", "localidade", "municipio", "uf",
+                    "funcao", "empenhado", "liquidado", "pago", "rap_pago")
+
+# 3) tipo de emenda vira fator, e troco os níveis por nomes mais curtos
+emendas$tipo <- factor(emendas$tipo, levels = c(
+  "Emenda de Bancada", "Emenda de Comissão", "Emenda de Relator",
+  "Emenda Individual - Transferências com Finalidade Definida",
+  "Emenda Individual - Transferências Especiais"))
+levels(emendas$tipo) <- c("Bancada", "Comissão", "Relator",
+                          "Individual (finalidade definida)", "Individual (transf. especial)")
+
+# 4) duas variáveis novas
+emendas <- emendas %>%
+  mutate(
+    # nível geográfico em que o recurso foi registrado
+    nivel = ifelse(is.na(uf), "Nacional/Regional",
+            ifelse(localidade == "MÚLTIPLO", "Múltiplo (sem município)",
+            ifelse(is.na(municipio), "Estado", "Município"))),
+    # total efetivamente pago: no próprio ano + restos a pagar pagos depois
+    pago_total = pago + rap_pago
+  )
+
+# 5) recorte do projeto: só os estados do Nordeste.
+# O merge junta com a tabela de apoio pela coluna uf: fica só quem é do Nordeste
+# e cada linha ganha a coluna uf_sigla.
+emendas_ne <- merge(emendas, nordeste, by = "uf")
+emendas_ne$grupo <- ifelse(emendas_ne$uf_sigla == "PE", "Pernambuco", "Demais estados do NE")
+```
+```{r limpeza-favorecidos}
+# seleciono as colunas de interesse e troco os nomes
+favorecidos <- favorecidos_raw[, c("Código da Emenda", "Ano/Mês", "Favorecido",
+                                   "Natureza Jurídica", "Tipo Favorecido", "UF Favorecido",
+                                   "Município Favorecido", "Valor Recebido")]
+names(favorecidos) <- c("codigo", "ano_mes", "favorecido", "natureza_juridica",
+                        "tipo_favorecido", "uf_sigla", "municipio_fav", "valor")
+
+# "Ano/Mês" vem junto como um número só (202610), então separo com contas
+favorecidos$mes_pag <- favorecidos$ano_mes %% 100                          # resto da divisão: 10
+favorecidos$ano_pag <- (favorecidos$ano_mes - favorecidos$mes_pag) / 100   # 2026
+
+# mesma categoria escrita de jeitos diferentes na fonte
+favorecidos$tipo_favorecido[which(favorecidos$tipo_favorecido == "Pessoa Fisica")] <- "Pessoa Física"
+favorecidos$tipo_favorecido[which(favorecidos$tipo_favorecido == "Inscrição Genéric")] <- "Inscrição Genérica"
+
+# só favorecidos do Nordeste
+favorecidos <- favorecidos %>% filter(uf_sigla %in% nordeste$uf_sigla)
+```
+```{r limpeza-convenios}
+# seleciono as colunas de interesse e troco os nomes
+convenios <- convenios_raw[, c("Código da Emenda", "Nome Função", "Localidade do gasto",
+                               "Data Publicação Convênio", "Convenente",
+                               "Objeto Convênio", "Valor Convênio")]
+names(convenios) <- c("codigo", "funcao", "localidade", "data_pub",
+                      "convenente", "objeto", "valor")
+
+# "06/01/2016" -> dia, mês e ano em colunas separadas
+convenios <- convenios %>%
+  separate(col = data_pub, into = c("dia_pub", "mes_pub", "ano_pub"), sep = "/") %>%
+  mutate(mes_pub = as.numeric(mes_pub),
+         ano_pub = as.numeric(ano_pub))
+
+# "JEQUIÉ - BA" -> local = "JEQUIÉ" e uf_sigla = "BA"
+# convênios estaduais ("PERNAMBUCO (UF)") não têm " - ", então a sigla fica NA
+convenios <- convenios %>%
+  separate(col = localidade, into = c("local", "uf_sigla"), sep = " - ", fill = "right")
+
+# para os convênios estaduais, pego a sigla na tabela de apoio:
+# para cada estado do Nordeste, onde local é "PERNAMBUCO (UF)" coloco "PE"
+for (i in 1:nrow(nordeste)) {
+  linhas <- which(convenios$local == paste(nordeste$uf[i], "(UF)"))
+  convenios$uf_sigla[linhas] <- nordeste$uf_sigla[i]
+}
+```
+
+O que eu fiz na limpeza:
+
+1. Na importação, "Sem informação" e "S/I" viraram NA (argumento na.strings) e os valores já viraram número (argumento dec). Não preenchi nenhum valor ausente, porque não faz sentido inventar valores em reais.
+2. Selecionei só as colunas de interesse e troquei os nomes por nomes curtos, sem acento e sem espaço.
+3. Transformei o tipo de emenda em fator e troquei os níveis por nomes mais curtos.
+4. Criei a variável nivel, que diz se o recurso foi registrado para um estado, um município, "múltiplo" (sem município) ou nacional.
+5. Criei a variável pago_total, que soma o valor pago no ano com os restos a pagar pagos depois.
+6. Usei só os 9 estados do Nordeste nas comparações. Como a base de emendas usa o nome do estado e a de favorecidos usa a sigla, fiz uma tabela de apoio e juntei com merge().
+7. Nos favorecidos, separei Ano/Mês em duas colunas e corrigi grafias diferentes da mesma categoria (como "Pessoa Fisica").
+8. Nos convênios, separei a data em dia, mês e ano e separei o município da sigla do estado (separate).
+
+## 3.4 Conjunto de dados final
+
+```{r dados-finais}
+# Amostra de 10 linhas da base limpa (set.seed para o sorteio ser sempre o mesmo)
+set.seed(123)
+amostra <- emendas_ne %>%
+  slice_sample(n = 10) %>%
+  select(codigo, ano, tipo, autor, municipio, uf_sigla, nivel, funcao, empenhado, pago_total) %>%
+  mutate(codigo = as.character(codigo),
+         empenhado = reais(empenhado),
+         pago_total = reais(pago_total))
+
+options(knitr.kable.NA = "")                  # NA aparece como célula vazia na tabela
+kbl(amostra, row.names = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), font_size = 12) %>%
+  scroll_box(width = "100%")
+```
+
+A base principal do Nordeste tem `r format(nrow(emendas_ne), big.mark = ".", decimal.mark = ",")` linhas, e `r format(sum(emendas_ne$uf_sigla == "PE"), big.mark = ".", decimal.mark = ",")` são de Pernambuco. Uma mesma emenda pode aparecer em mais de uma linha. A tabela mostra só 10 linhas sorteadas, para dar uma ideia da estrutura.
+
+## 3.5 Resumo das variáveis
+
+```{r resumo-variaveis}
+# Tabela com um resumo das principais variáveis
+vars <- c("ano", "tipo", "autor", "uf_sigla", "nivel", "funcao", "empenhado", "pago_total")
+autores <- emendas_ne$autor[!is.na(emendas_ne$autor)]
+
+resumo <- data.frame(
+  Variavel  = vars,
+  Tipo      = sapply(emendas_ne[vars], function(x) class(x)[1]),
+  Descricao = c("Ano da emenda", "Tipo de emenda", "Parlamentar, bancada ou comissão",
+                "Estado de aplicação", "Nível geográfico (variável criada)",
+                "Área de governo", "Valor empenhado, em reais",
+                "Pago no ano + restos a pagar pagos (variável criada)"),
+  Resumo = c(
+    paste(min(emendas_ne$ano), "a", max(emendas_ne$ano)),
+    paste(length(levels(emendas_ne$tipo)), "categorias"),
+    paste(length(unique(autores)), "autores;",
+          format(sum(is.na(emendas_ne$autor)), big.mark = "."), "sem informação"),
+    paste(length(unique(emendas_ne$uf_sigla)), "estados"),
+    paste(length(unique(emendas_ne$nivel)), "categorias"),
+    paste(length(unique(emendas_ne$funcao)), "funções"),
+    bi(sum(emendas_ne$empenhado, na.rm = TRUE)),
+    bi(sum(emendas_ne$pago_total, na.rm = TRUE))
+  )
+)
+
+kbl(resumo, row.names = FALSE, col.names = c("Variável", "Tipo", "Descrição", "Resumo")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+A base do Nordeste vai de `r paste(range(emendas_ne$ano), collapse = " a ")`, com `r bi(sum(emendas_ne$empenhado, na.rm = TRUE))` empenhados e `r bi(sum(emendas_ne$pago_total, na.rm = TRUE))` pagos. A variável autor tem `r format(sum(is.na(emendas_ne$autor)), big.mark = ".", decimal.mark = ",")` linhas sem informação.
+
+# 4. Análise exploratória
+
+```{r tema}
+# Cores usadas em todos os gráficos: Pernambuco em vermelho, demais estados em cinza
+cor_pe <- "#C0392B"
+cor_ne <- "grey65"
+```
+
+## 4.1 O volume cresceu muito
+
+Primeiro quis ver quanto dinheiro as emendas movimentam por ano no Brasil inteiro, separado por tipo de emenda.
+
+```{r evolucao-nacional}
+# Brasil inteiro: valor empenhado por ano e tipo (2026 = ano incompleto)
+evolucao <- emendas %>%
+  group_by(ano, tipo) %>%
+  summarise(empenhado = sum(empenhado, na.rm = TRUE)) %>%
+  ungroup()
+
+# gráfico interativo (passando o mouse aparece o valor de cada barra)
+plot_ly(evolucao, x = ~ano, y = ~empenhado / 1e9, color = ~tipo, colors = "Set2",
+        type = "bar", text = ~paste0(tipo, "<br>", ano, ": ", bi(empenhado)),
+        hoverinfo = "text", textposition = "none") %>%
+  layout(barmode = "stack",
+         title = "Valor empenhado em emendas parlamentares no Brasil (2026 parcial)",
+         xaxis = list(title = "", dtick = 1),
+         yaxis = list(title = "Valor empenhado (R$ bilhões)"),
+         legend = list(orientation = "h", y = -0.15))
+```
+
+```{r calc-evolucao, include=FALSE}
+vol_ano <- emendas %>% group_by(ano) %>% summarise(emp = sum(empenhado, na.rm = TRUE))
+pico    <- vol_ano %>% arrange(desc(emp)) %>% head(1)
+rel_fim <- max(evolucao$ano[evolucao$tipo == "Relator" & evolucao$empenhado > 5e7])
+com22   <- evolucao$empenhado[evolucao$tipo == "Comissão" & evolucao$ano == 2022]
+com24   <- evolucao$empenhado[evolucao$tipo == "Comissão" & evolucao$ano == 2024]
+esp_ini <- min(evolucao$ano[evolucao$tipo == "Individual (transf. especial)" & evolucao$empenhado > 0])
+```
+
+O valor empenhado passou de `r bi(vol_ano$emp[vol_ano$ano == 2014])` em 2014 para `r bi(pico$emp)` em `r pico$ano`, que foi o maior da série (o menor foi 2015, com `r bi(vol_ano$emp[vol_ano$ano == 2015])`). E 2026 ainda nem acabou e já tem `r bi(vol_ano$emp[vol_ano$ano == 2026])`. Dá para ver duas mudanças no gráfico. As emendas de relator vão até `r rel_fim` e depois desaparecem, e no mesmo período as emendas de comissão passam de `r bi(com22)` em 2022 para `r bi(com24)` em 2024. Além disso, as transferências especiais começam em `r esp_ini`. Essas mudanças aconteceram perto da decisão do STF em 2022, mas só com esses dados não dá para dizer que uma coisa causou a outra.
+
+## 4.2 Pernambuco no Nordeste
+
+Agora o foco é a comparação entre os estados do Nordeste. Aqui só entram as linhas que têm estado definido.
+
+```{r ranking-ne}
+# Total empenhado e pago por estado do Nordeste
+rank_ne <- emendas_ne %>%
+  group_by(uf_sigla) %>%
+  summarise(emp  = sum(empenhado, na.rm = TRUE),
+            pago = sum(pago_total, na.rm = TRUE)) %>%
+  arrange(desc(emp))
+
+# no barplot horizontal a 1ª barra fica embaixo, então ordeno do menor para o maior
+graf <- rank_ne %>% arrange(emp)
+barplot(graf$emp / 1e9, names.arg = graf$uf_sigla, horiz = TRUE, las = 1,
+        col = ifelse(graf$uf_sigla == "PE", cor_pe, cor_ne),
+        main = "Total empenhado por estado do Nordeste (2014 a 2026)",
+        xlab = "Valor empenhado (R$ bilhões)")
+```
+
+```{r calc-ranking, include=FALSE}
+pos_pe      <- which(rank_ne$uf_sigla == "PE")
+pos_pe_pago <- which(arrange(rank_ne, desc(pago))$uf_sigla == "PE")
+part_pe_tot <- rank_ne$emp[pos_pe] / sum(rank_ne$emp)
+```
+
+Pernambuco fica em `r pos_pe`º lugar no valor empenhado, com `r bi(rank_ne$emp[pos_pe])`, o que dá `r pc(part_pe_tot)` do total do Nordeste. No valor pago ele também fica em `r pos_pe_pago`º. O estado que mais recebeu foi `r com_artigo[[rank_ne$uf_sigla[1]]]`, com `r bi(rank_ne$emp[1])`. Como são valores totais, estados maiores tendem a receber mais, e eu não consegui ajustar pela população porque ela não está nos dados.
+
+Como o total não mostra o tipo de emenda, montei uma matriz com os estados nas linhas e os tipos nas colunas, e dividi cada linha pelo seu total. Assim cada estado soma 100% e dá para comparar o perfil de cada um.
+
+```{r matriz-tipos}
+# Valor empenhado por estado e tipo de emenda
+tipo_uf <- emendas_ne %>%
+  group_by(uf_sigla, tipo) %>%
+  summarise(emp = sum(empenhado, na.rm = TRUE)) %>%
+  ungroup() %>%
+  spread(key = tipo, value = emp, fill = 0)   # cada tipo vira uma coluna
+
+# vira matriz: estados nas linhas, tipos nas colunas
+mat_tipo <- as.matrix(tipo_uf[, -1])          # tira a coluna da sigla
+rownames(mat_tipo) <- tipo_uf$uf_sigla
+
+# prop.table com margin = 1: cada linha (estado) passa a somar 1
+mat_prop <- prop.table(mat_tipo, margin = 1)
+
+# linha extra com o perfil do Nordeste inteiro (soma das colunas da matriz)
+mat_prop <- rbind(mat_prop, NE = colSums(mat_tipo) / sum(mat_tipo))
+
+round(mat_prop * 100, 1) %>%
+  kbl(caption = "Distribuição do valor empenhado por tipo de emenda (% de cada estado)",
+      format.args = list(decimal.mark = ",")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  row_spec(which(rownames(mat_prop) == "PE"), bold = TRUE, color = "white", background = cor_pe) %>%
+  row_spec(nrow(mat_prop), bold = TRUE, italic = TRUE)
+```
+
+```{r calc-matriz, include=FALSE}
+cols_ind <- c("Individual (finalidade definida)", "Individual (transf. especial)")
+ind_pe   <- sum(mat_prop["PE", cols_ind])
+ind_ne   <- sum(mat_prop["NE", cols_ind])
+# soma das duas colunas individuais em cada estado (apply com MARGIN = 1 = por linha)
+ind_ord  <- sort(apply(mat_prop[rownames(mat_prop) != "NE", cols_ind], 1, sum), decreasing = TRUE)
+```
+
+Somando os dois tipos de emenda individual, eles representam `r pc(ind_pe)` do valor de Pernambuco, contra `r pc(ind_ne)` no Nordeste como um todo. O estado com maior peso de emendas individuais é `r com_artigo[[names(ind_ord)[1]]]` (`r pc(ind_ord[1])`) e o com menor é `r com_artigo[[names(ind_ord)[length(ind_ord)]]]` (`r pc(ind_ord[length(ind_ord)])`).
+
+```{r participacao-pe}
+# Participação de PE no total do Nordeste, ano a ano
+part_ano <- emendas_ne %>%
+  group_by(ano, grupo) %>%
+  summarise(emp = sum(empenhado, na.rm = TRUE)) %>%
+  group_by(ano) %>%
+  mutate(p = emp / sum(emp)) %>%     # fatia de cada grupo dentro do ano
+  ungroup() %>%
+  filter(grupo == "Pernambuco")
+
+plot_ly(part_ano, x = ~ano, y = ~p * 100, type = "scatter", mode = "lines+markers",
+        line = list(color = cor_pe), marker = list(color = cor_pe),
+        text = ~paste0(ano, ": ", pc(p), " (", bi(emp), ")"), hoverinfo = "text") %>%
+  layout(title = "Fatia de Pernambuco no valor empenhado do Nordeste",
+         xaxis = list(title = "", dtick = 1),
+         yaxis = list(title = "Participação (%)", range = c(0, 20)))
+```
+
+A participação de Pernambuco varia de `r pc(min(part_ano$p))` (em `r part_ano$ano[part_ano$p == min(part_ano$p)]`) a `r pc(max(part_ano$p))` (em `r part_ano$ano[part_ano$p == max(part_ano$p)]`, que ainda está incompleto). Mesmo com o dinheiro total crescendo bastante, a fatia do estado ficou sempre entre 10% e 15%.
+
+Também olhei em quais áreas (funções do governo) o dinheiro de Pernambuco é aplicado.
+
+```{r funcoes}
+# As 6 áreas com mais dinheiro em Pernambuco
+funcoes_pe <- emendas_ne %>%
+  filter(uf_sigla == "PE") %>%
+  group_by(funcao) %>%
+  summarise(emp = sum(empenhado, na.rm = TRUE)) %>%
+  mutate(prop = emp / sum(emp)) %>%
+  arrange(desc(prop)) %>%
+  head(6)
+
+graf <- funcoes_pe %>% arrange(prop)
+par(mar = c(4, 11, 3, 1))   # margem esquerda maior para caber os nomes das áreas
+barplot(graf$prop * 100, names.arg = graf$funcao, horiz = TRUE, las = 1, col = cor_pe,
+        xlim = c(0, 60),
+        main = "Principais áreas das emendas em Pernambuco",
+        xlab = "% do valor empenhado")
+```
+
+```{r calc-funcoes, include=FALSE}
+saude_pe <- funcoes_pe$prop[funcoes_pe$funcao == "Saúde"]
+outros_ne <- emendas_ne %>% filter(uf_sigla != "PE")
+saude_ne <- sum(outros_ne$empenhado[outros_ne$funcao == "Saúde"], na.rm = TRUE) /
+            sum(outros_ne$empenhado, na.rm = TRUE)
+```
+
+A saúde é a área com mais dinheiro, com `r pc(saude_pe)` do que foi empenhado em Pernambuco. Nos outros estados do Nordeste a parcela é parecida (`r pc(saude_ne)`), então o perfil de Pernambuco não é muito diferente do resto da região. A segunda área é "Encargos especiais", que em Pernambuco é formada só pelas transferências especiais (emenda Pix). Como essas emendas não dizem em que o dinheiro vai ser gasto, elas entram nessa categoria genérica.
+
+## 4.3 O dinheiro "sem endereço"
+
+Na planilha de emendas, a coluna que diz o local do recurso muitas vezes vem escrita como "MÚLTIPLO" em vez do nome de um município. Isso quer dizer que a emenda é de um estado, mas o registro não diz para qual município o dinheiro foi, normalmente porque ele é dividido entre vários. Isso atrapalha saber onde o dinheiro chegou.
+
+```{r nivel-geografico}
+# % do valor empenhado registrado como "Múltiplo", por estado
+mult <- emendas_ne %>%
+  group_by(uf_sigla) %>%
+  summarise(p = sum(empenhado[nivel == "Múltiplo (sem município)"], na.rm = TRUE) /
+                sum(empenhado, na.rm = TRUE)) %>%
+  arrange(p)
+
+barplot(mult$p * 100, names.arg = mult$uf_sigla, horiz = TRUE, las = 1,
+        col = ifelse(mult$uf_sigla == "PE", cor_pe, cor_ne),
+        main = "Parcela do valor registrada como \"Múltiplo\"",
+        xlab = "% do valor empenhado")
+```
+
+```{r calc-nivel, include=FALSE}
+mult_pe <- mult$p[mult$uf_sigla == "PE"]
+mult_ne <- sum(emendas_ne$empenhado[emendas_ne$nivel == "Múltiplo (sem município)"], na.rm = TRUE) /
+           sum(emendas_ne$empenhado, na.rm = TRUE)
+```
+
+No Nordeste, `r pc(mult_ne)` do valor está registrado como "Múltiplo", e em Pernambuco é `r pc(mult_pe)`. Entre os estados, vai de `r pc(min(mult$p))` (`r nome_uf(mult$uf_sigla[1])`) a `r pc(max(mult$p))` (`r nome_uf(mult$uf_sigla[nrow(mult)])`). Ou seja, mais da metade do dinheiro não diz para qual município foi. Isso não quer dizer que o dinheiro sumiu, e na próxima parte uso a tabela de favorecidos para descobrir o destino.
+
+## 4.4 Quem recebe o dinheiro
+
+Para as emendas de Pernambuco registradas como "Múltiplo", juntei com a tabela de favorecidos, que mostra o município que recebeu.
+
+```{r juncao-multiplo}
+# Códigos das emendas "Múltiplo" de PE (unique: cada código aparece uma vez só)
+codigos_multiplo_pe <- emendas_ne %>%
+  filter(uf_sigla == "PE", nivel == "Múltiplo (sem município)", !is.na(codigo)) %>%
+  select(codigo)
+codigos_multiplo_pe <- unique(codigos_multiplo_pe)
+
+# merge com a tabela de favorecidos, que mostra em qual município o dinheiro chegou
+destino_multiplo <- merge(favorecidos, codigos_multiplo_pe, by = "codigo") %>%
+  filter(uf_sigla == "PE") %>%
+  group_by(municipio_fav) %>%
+  summarise(recebido      = sum(valor, na.rm = TRUE),
+            n_favorecidos = length(unique(favorecido))) %>%
+  arrange(desc(recebido)) %>%
+  mutate(part = recebido / sum(recebido))
+
+destino_multiplo %>%
+  head(10) %>%
+  mutate(municipio_fav = titulo(municipio_fav),
+         recebido = reais(recebido),
+         part = pc(part)) %>%
+  kbl(col.names = c("Município", "Valor recebido", "Nº de favorecidos", "Participação"),
+      caption = "Municípios de Pernambuco que receberam o dinheiro das emendas sem município definido") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+```{r calc-multiplo, include=FALSE}
+n_mun_mult <- nrow(destino_multiplo)
+tot_mult   <- sum(destino_multiplo$recebido)
+top_mun    <- destino_multiplo[1, ]
+# quanto foi pago nas emendas "Múltiplo" de PE, para comparar com o que achei nos favorecidos
+pago_mult  <- sum(emendas_ne$pago_total[emendas_ne$uf_sigla == "PE" &
+                  emendas_ne$nivel == "Múltiplo (sem município)"], na.rm = TRUE)
+```
+
+Consegui achar `r bi(tot_mult)` dos `r bi(pago_mult)` pagos nessas emendas. Quase todo o resto aparece na tabela de favorecidos como pago ao Banco do Brasil, em Brasília, então nem essa tabela mostra para qual município ele foi. A parte que achei em Pernambuco chega a `r n_mun_mult` municípios, que são todos os municípios do estado (Fernando de Noronha é um distrito e não entra na conta). O que mais recebeu foi `r titulo(top_mun$municipio_fav)`, com `r pc(top_mun$recebido / tot_mult)` do total, e o resto fica bem distribuído. Então a junção das tabelas mostra uma informação que a base de emendas sozinha não mostra.
+
+Também olhei que tipo de favorecido recebe o dinheiro em Pernambuco (natureza jurídica).
+
+```{r natureza-juridica}
+# Natureza jurídica dos favorecidos de Pernambuco
+nat_pe <- favorecidos %>%
+  filter(uf_sigla == "PE", valor > 0) %>%
+  mutate(natureza = ifelse(is.na(natureza_juridica), "Sem informação", natureza_juridica)) %>%
+  group_by(natureza) %>%
+  summarise(valor = sum(valor)) %>%
+  arrange(desc(valor))
+
+# mantenho as 5 maiores e junto o resto em "Outros"
+nat_pe$natureza[6:nrow(nat_pe)] <- "Outros"
+nat_pe <- nat_pe %>%
+  group_by(natureza) %>%
+  summarise(valor = sum(valor)) %>%
+  mutate(prop = valor / sum(valor)) %>%
+  arrange(prop)
+
+par(mar = c(4, 20, 3, 1))   # margem esquerda grande para os nomes longos
+barplot(nat_pe$prop * 100, names.arg = nat_pe$natureza, horiz = TRUE, las = 1,
+        col = cor_pe, cex.names = 0.75,
+        main = "Quem recebe o dinheiro em Pernambuco?",
+        xlab = "% do valor recebido")
+```
+
+```{r calc-natureza, include=FALSE}
+nat <- favorecidos %>%
+  filter(valor > 0) %>%
+  mutate(grupo = ifelse(uf_sigla == "PE", "Pernambuco", "Demais"),
+         natureza_juridica = ifelse(is.na(natureza_juridica), "Sem informação", natureza_juridica)) %>%
+  group_by(grupo, natureza_juridica) %>%
+  summarise(v = sum(valor)) %>%
+  group_by(grupo) %>%
+  mutate(p = v / sum(v)) %>%
+  ungroup()
+gov <- function(g) sum(nat$p[nat$grupo == g & nat$natureza_juridica %in%
+        c("Município", "Fundo Público da Administração Direta Municipal")])
+```
+
+Em Pernambuco, `r pc(gov("Pernambuco"))` do valor vai para municípios e fundos municipais, o que combina com o peso da saúde. Nos outros estados do Nordeste essa parcela é de `r pc(gov("Demais"))`, bem parecida.
+
+Por fim, os autores das emendas de Pernambuco:
+
+```{r autores-pe}
+# Os 10 maiores autores de emendas para PE
+aut_pe <- emendas_ne %>%
+  filter(uf_sigla == "PE") %>%
+  mutate(autor = ifelse(is.na(autor), "Sem informação", autor)) %>%
+  group_by(autor) %>%
+  summarise(n = n(), emp = sum(empenhado, na.rm = TRUE)) %>%
+  arrange(desc(emp))
+
+aut_pe %>%
+  head(10) %>%
+  mutate(emp = reais(emp)) %>%
+  kbl(col.names = c("Autor", "Nº de emendas", "Valor empenhado")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  row_spec(1, bold = TRUE)
+```
+
+```{r calc-autores, include=FALSE}
+aut_sem <- aut_pe[aut_pe$autor == "Sem informação", ]
+# maior autor entre as emendas individuais (as de parlamentares)
+aut_ind <- emendas_ne %>%
+  filter(uf_sigla == "PE", !is.na(autor),
+         tipo %in% c("Individual (finalidade definida)", "Individual (transf. especial)")) %>%
+  group_by(autor) %>%
+  summarise(emp = sum(empenhado, na.rm = TRUE)) %>%
+  arrange(desc(emp)) %>%
+  head(1)
+```
+
+O maior autor é a `r titulo(aut_pe$autor[1])`, com `r bi(aut_pe$emp[1])`. Entre os parlamentares individuais, o primeiro é `r titulo(aut_ind$autor)`. Um ponto que chama atenção é que `r format(aut_sem$n, big.mark = ".", decimal.mark = ",")` registros (`r bi(aut_sem$emp)`) não têm autor informado, então não dá para saber quem indicou todo o dinheiro.
+
+Fiquei curioso para saber se a falta de autor acontece igual em todos os tipos de emenda, então olhei isso para o Brasil inteiro.
+
+```{r sem-autor-tipo}
+# % do valor empenhado sem autor informado, por tipo de emenda (Brasil)
+sem_autor <- emendas %>%
+  group_by(tipo) %>%
+  summarise(sem_autor = sum(empenhado[is.na(autor)], na.rm = TRUE),
+            total     = sum(empenhado, na.rm = TRUE)) %>%
+  mutate(prop = sem_autor / total) %>%
+  arrange(desc(prop))
+
+sem_autor %>%
+  mutate(sem_autor = bi(sem_autor), total = bi(total), prop = pc(prop)) %>%
+  kbl(col.names = c("Tipo de emenda", "Sem autor", "Valor empenhado", "% sem autor"),
+      caption = "Valor sem autor informado por tipo de emenda (Brasil, 2014 a 2026)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  row_spec(which(sem_autor$tipo == "Relator"), bold = TRUE, color = "white", background = cor_pe)
+```
+
+```{r calc-sem-autor, include=FALSE}
+rel_sem    <- sem_autor$prop[sem_autor$tipo == "Relator"]
+outros_tip <- sem_autor[sem_autor$tipo != "Relator", ]
+outros_sem <- sum(outros_tip$sem_autor) / sum(outros_tip$total)
+rel_pe_sem <- sum(emendas_ne$uf_sigla == "PE" & is.na(emendas_ne$autor) & emendas_ne$tipo == "Relator")
+```
+
+Nas emendas de relator, `r pc(rel_sem)` do valor não tem autor, enquanto nos outros tipos juntos isso fica em `r pc(outros_sem)`. Em Pernambuco, `r rel_pe_sem` dos `r format(aut_sem$n, big.mark = ".", decimal.mark = ",")` registros sem autor são de relator. Isso tem a ver com a crítica feita ao "orçamento secreto", que o STF considerou inconstitucional justamente por não mostrar quem pediu o dinheiro. As emendas de relator também são as que mais têm linhas sem Código da Emenda, que não podem ser ligadas às outras tabelas.
+
+## 4.5 O dinheiro chega?
+
+Empenhar é prometer o gasto e pagar é entregar o dinheiro. Aqui comparo quanto do valor empenhado virou pagamento, de 2014 a 2025 (para não pegar o ano incompleto).
+
+```{r funil}
+# Soma das três etapas por grupo, sem o ano incompleto
+funil <- emendas_ne %>%
+  filter(ano <= 2025) %>%
+  group_by(grupo) %>%
+  summarise(empenhado  = sum(empenhado, na.rm = TRUE),
+            liquidado  = sum(liquidado, na.rm = TRUE),
+            pago_total = sum(pago_total, na.rm = TRUE))
+
+# matriz: grupos nas linhas, etapas nas colunas
+mat_funil <- as.matrix(funil[, c("empenhado", "liquidado", "pago_total")])
+rownames(mat_funil) <- funil$grupo
+colnames(mat_funil) <- c("Empenhado", "Liquidado (no ano)", "Pago (total)")
+
+# divido cada linha pelo seu valor empenhado: o empenhado vira 100%
+mat_funil <- mat_funil / mat_funil[, "Empenhado"]
+
+cores <- c(cor_ne, cor_pe)
+barras <- barplot(mat_funil * 100, beside = TRUE, col = cores, ylim = c(0, 130),
+                  main = "Do empenho ao pagamento (2014 a 2025)",
+                  ylab = "% do valor empenhado")
+text(barras, mat_funil * 100 + 5, labels = pc(mat_funil), cex = 0.8)
+legend("top", pch = 15, col = cores, legend = rownames(mat_funil), horiz = TRUE, bty = "n")
+```
+
+```{r execucao-uf}
+# Taxa de execução por estado (pago_total / empenhado)
+execucao <- emendas_ne %>%
+  filter(ano <= 2025) %>%
+  group_by(uf_sigla) %>%
+  summarise(taxa = sum(pago_total, na.rm = TRUE) / sum(empenhado, na.rm = TRUE)) %>%
+  arrange(taxa)
+
+barplot(execucao$taxa * 100, names.arg = execucao$uf_sigla, horiz = TRUE, las = 1,
+        col = ifelse(execucao$uf_sigla == "PE", cor_pe, cor_ne),
+        main = "Taxa de execução por estado (2014 a 2025)",
+        xlab = "Pago / empenhado (%)")
+```
+
+```{r calc-execucao, include=FALSE}
+get_pct  <- function(g, e) mat_funil[g, e]
+exec_ord <- execucao %>% arrange(desc(taxa))
+pos_exec <- which(exec_ord$uf_sigla == "PE")
+```
+
+Em Pernambuco, `r pc(get_pct("Pernambuco", "Pago (total)"))` do valor empenhado já foi pago, e nos outros estados do Nordeste é `r pc(get_pct("Demais estados do NE", "Pago (total)"))`. O que foi liquidado dentro do próprio ano é menor (`r pc(get_pct("Pernambuco", "Liquidado (no ano)"))` em Pernambuco), o que mostra que boa parte do dinheiro é paga depois, como restos a pagar. Pernambuco fica em `r pos_exec`º lugar entre os nove estados na taxa de execução, que varia de `r pc(min(execucao$taxa))` a `r pc(max(execucao$taxa))`. Então o estado fica um pouco abaixo da maioria, mas a diferença entre eles é pequena.
+
+## 4.6 O que se compra e quando
+
+Na tabela de convênios, olhei em que mês eles são publicados e o que eles compram.
+
+```{r convenios-ne}
+# só os convênios dos estados do Nordeste
+convenios_ne <- convenios %>% filter(uf_sigla %in% nordeste$uf_sigla)
+```
+
+```{r sazonalidade}
+# Convênios publicados por mês (estados do Nordeste, desde 2014)
+conv_mes <- convenios_ne %>% filter(!is.na(mes_pub), ano_pub >= 2014)
+
+# fator com os 12 níveis, para o table() mostrar também os meses sem convênio
+tab_mes <- table(factor(conv_mes$mes_pub, levels = 1:12))
+
+barplot(tab_mes, col = cor_pe,
+        names.arg = c("jan", "fev", "mar", "abr", "mai", "jun",
+                      "jul", "ago", "set", "out", "nov", "dez"),
+        main = "Convênios publicados por mês no Nordeste",
+        ylab = "Quantidade de convênios")
+```
+
+```{r calc-sazonal, include=FALSE}
+p_dezjan <- as.numeric(tab_mes["12"] + tab_mes["1"]) / sum(tab_mes)
+```
+
+`r pc(p_dezjan)` dos convênios do Nordeste foram publicados em dezembro e janeiro, e de fevereiro a abril quase não há publicação. Parece que os convênios se concentram na virada do ano, mas os dados não explicam o motivo.
+
+E o que esses convênios compram? Contei as palavras mais frequentes no objeto dos convênios de Pernambuco.
+
+```{r palavras-convenios}
+# Mineração de texto: palavras mais frequentes no objeto dos convênios de PE
+stop_pt <- c("de", "da", "do", "das", "dos", "e", "em", "para", "a", "o", "no",
+             "na", "com", "por", "ao", "as", "os", "um", "uma",
+             # palavras genéricas do próprio campo, que não dizem o que é comprado
+             "municipio", "pe", "pernambuco", "sao", "diversas", "realizacao", "unidade")
+
+palavras_pe <- convenios_ne %>%
+  filter(uf_sigla == "PE") %>%
+  unnest_tokens(palavra, objeto) %>%          # uma palavra por linha (já em minúsculas)
+  filter(!palavra %in% stop_pt,
+         is.na(as.numeric(palavra)))          # tira os números: só eles viram número
+
+# frequência de cada palavra, da mais comum para a menos comum
+freq <- sort(table(palavras_pe$palavra), decreasing = TRUE)
+
+top15 <- rev(head(freq, 15))                  # rev: a mais frequente fica no topo
+par(mar = c(4, 9, 3, 1))
+barplot(top15, horiz = TRUE, las = 1, col = cor_pe,
+        main = "O que os convênios de Pernambuco compram?",
+        xlab = "Frequência no campo 'objeto do convênio'")
+```
+
+```{r calc-palavras, include=FALSE}
+top_pal   <- names(freq)[1:6]
+n_conv_pe <- sum(convenios_ne$uf_sigla == "PE")
+```
+
+Entre os `r format(n_conv_pe, big.mark = ".", decimal.mark = ",")` convênios de Pernambuco, as palavras mais frequentes são `r juntar(top_pal)` (o campo original vem sem acento). As palavras formam dois grupos, um de compra de equipamentos para a saúde e outro de obras urbanas, como pavimentação de ruas. Isso bate com o que apareceu antes sobre a saúde. Como só conto palavras, o resultado é uma ideia geral e não um valor exato.
+
+# 5. Conclusões
+
+## 5.1 Resposta à pergunta
+
+O dinheiro das emendas cresceu bastante (de `r bi(vol_ano$emp[vol_ano$ano == 2014])` em 2014 para `r bi(pico$emp)` em `r pico$ano`). No Nordeste, mais da metade vai para a saúde e a maior parte chega a municípios e fundos municipais. Pernambuco fica em `r pos_pe`º lugar no Nordeste em valor empenhado (`r bi(rank_ne$emp[pos_pe])`, `r pc(part_pe_tot)` da região), e só `r juntar(unname(com_artigo[rank_ne$uf_sigla[1:(pos_pe - 1)]]))` receberam mais. Na área de aplicação e na execução, o estado é parecido com os vizinhos.
+
+## 5.2 Resumo do método
+
+Analisei as três tabelas do Portal da Transparência, tratei os valores ausentes, converti valores e datas, criei duas variáveis (nivel e pago_total) e juntei as tabelas pelo Código da Emenda. Depois fiz gráficos e tabelas e uma contagem de palavras nos convênios.
+
+## 5.3 Principais resultados
+
+1. As emendas de relator vão até `r rel_fim` e somem, enquanto as de comissão e as transferências especiais crescem.
+2. `r pc(mult_ne)` do valor do Nordeste está como "Múltiplo", mas a tabela de favorecidos mostra que em Pernambuco ele chega a todos os `r n_mun_mult` municípios.
+3. Pernambuco pagou `r pc(get_pct("Pernambuco", "Pago (total)"))` do que empenhou e ficou em `r pos_exec`º no Nordeste, mas a diferença entre os estados é pequena.
+4. `r pc(p_dezjan)` dos convênios são publicados em dezembro e janeiro.
+5. `r format(aut_sem$n, big.mark = ".", decimal.mark = ",")` registros de Pernambuco não têm autor informado. No Brasil, `r pc(rel_sem)` do valor das emendas de relator não tem autor, contra `r pc(outros_sem)` nos outros tipos.
+
+## 5.4 Implicações
+
+O resultado mostra que, quando o dinheiro vem em tipos de emenda mais difíceis de acompanhar, fica mais complicado saber para onde ele foi. Também mostra que juntar tabelas diferentes ajuda a recuperar informações que uma tabela sozinha não mostra.
+
+Para quem acompanha os gastos públicos, como jornalistas e estudantes, a dica é não olhar só a base de emendas, porque muito do dinheiro aparece como "Múltiplo" ou sem autor. A tabela de favorecidos ajuda a descobrir o destino. Para quem trabalha em municípios de Pernambuco, a análise mostra que o estado recebe e executa mais ou menos como os vizinhos, e que a saúde é onde está a maior parte do dinheiro.
+
+## 5.5 Limitações
+
+1. Os valores são totais e não por habitante. Para saber se Pernambuco recebe pouco ou muito, seria preciso juntar a população de cada estado (por exemplo, do IBGE), o que fica como próximo passo.
+2. As linhas sem estado definido ficaram fora da comparação entre estados, e as registradas como "Múltiplo" só foram recuperadas em parte, porque uma parte aparece como paga ao Banco do Brasil.
+3. `r format(n_sem_cod, big.mark = ".", decimal.mark = ",")` linhas estão sem Código da Emenda e não puderam ser juntadas com as outras tabelas.
+4. O fim das emendas de relator e o crescimento das de comissão acontecem na mesma época, mas isso não prova que uma coisa causou a outra.
+5. A contagem de palavras dos convênios é simples e só dá uma ideia geral.
+
+# Referências
+
+- Portal da Transparência do Governo Federal. Emendas Parlamentares (download de dados). <https://portaldatransparencia.gov.br/download-de-dados/emendas-parlamentares>
+- Supremo Tribunal Federal. STF julga orçamento secreto inconstitucional (19/12/2022). <https://noticias.stf.jus.br/postsnoticias/stf-julga-orcamento-secreto-inconstitucional/>
+- Supremo Tribunal Federal. STF libera pagamento de emendas parlamentares, condicionado a critérios (02/12/2024). <https://noticias.stf.jus.br/postsnoticias/stf-libera-pagamento-de-emendas-parlamentares-condicionado-a-criterios/>
+- Mário Augusto Silva Araújo. Afinal, o que são emendas Pix e como elas são fiscalizadas? <https://conjur.com.br/2026-ago-14/afinal-o-que-sao-emendas-pix-e-como-elas-sao-fiscalizadas/>
+
